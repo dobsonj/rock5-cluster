@@ -1,0 +1,173 @@
+
+- name: Setup Rock5 base install
+  hosts: rock5
+  user: rock
+  become: true
+
+  vars:
+    user: rock
+    user_bashrc: "/home/{{ user }}/.bashrc"
+
+    sshd_config: /etc/ssh/sshd_config
+    locale_config: /etc/default/locale
+    etc_hosts: /etc/hosts
+    etc_fstab: /etc/fstab
+
+    nvme_device: /dev/nvme0n1
+    data_mount: /data
+
+  tasks:
+    - name: Add radxa gpg key
+      apt_key:
+        url: https://apt.radxa.com/bullseye-stable/public.key
+
+    - name: Remove apt packages
+      apt:
+        state: absent
+        pkg: [
+          lightdm,
+          xfce4,
+          xserver-common,
+          task-desktop,
+          libdvbv5-0,
+          libv4l-0,
+          ir-keytable,
+          libdvbv5-doc,
+          libv4l2rds0,
+          libv4lconvert0,
+          openbox,
+          blueman,
+          bluez,
+          chromium-x11,
+          desktop-base,
+          desktop-file-utils,
+          adwaita-icon-theme,
+          blueman,
+          bluez,
+          bluez-obexd,
+          firefox-esr,
+          gsettings-desktop-schemas,
+          hicolor-icon-theme,
+          libpulse0,
+          pulseaudio,
+        ]
+
+    - name: apt autoremove
+      apt:
+        autoremove: yes
+
+    - name: Upgrade apt packages
+      apt:
+        upgrade: yes
+        update_cache: yes
+        cache_valid_time: 120
+
+    - name: Install apt packages
+      apt:
+        pkg: [
+          ansible,
+          net-tools,
+          vim,
+          htop,
+          less,
+          screen,
+          fio,
+          nmap,
+          sysstat,
+          libvirt0,
+          libvirt-clients,
+          libvirt-dev,
+          libvirt-daemon-system,
+          libvirt-daemon-driver-qemu,
+          virtinst,
+          util-linux,
+          bridge-utils,
+          cloud-image-utils,
+          python3-libvirt,
+          python3-lxml,
+        ]
+
+    - name: Add user '{{ user }}' to group '{{ user }}'
+      user:
+        name: '{{ user }}'
+        group: '{{ user }}'
+
+    - name: Add user '{{ user }}' to additional groups
+      user:
+        name: '{{ user }}'
+        append: yes
+        groups: sudo,libvirt,kvm,netdev
+
+    - name: Update {{ user_bashrc }}
+      lineinfile:
+        dest: "{{ user_bashrc }}"
+        line: "{{ item }}"
+      with_items:
+        - "export EDITOR=vim"
+
+    - name: Update {{ sshd_config }}
+      lineinfile:
+        dest: "{{ sshd_config }}"
+        line: "{{ item }}"
+      with_items:
+        - "PasswordAuthentication no"
+
+    - name: Set default locale
+      copy:
+        dest: "{{ locale_config }}"
+        content: "LANG=C.UTF-8"
+
+    - name: Change hostname
+      hostname:
+        name: "{{ inventory_hostname }}"
+
+    - name: Replace hostname in {{ etc_hosts }}
+      replace:
+        path: "{{ etc_hosts }}"
+        regexp: '(\s+)rock-5b(\s+.*)?$'
+        replace: '\1{{ inventory_hostname }}\2'
+
+    - name: Create ext4 filesystem on {{ nvme_device }}
+      filesystem:
+        dev: "{{ nvme_device }}"
+        fstype: ext4
+        force: false # do not overwrite existing filesystem
+
+    - name: Create {{ data_mount }}
+      file:
+        path: "{{ item }}"
+        state: directory
+      with_items:
+          - "{{ data_mount }}"
+
+    - name: Add {{ nvme_device }} to {{ etc_fstab }}
+      lineinfile:
+        dest: "{{ etc_fstab }}"
+        line: "{{ item }}"
+      with_items:
+        - "{{ nvme_device }} {{ data_mount }} ext4 defaults 0 0"
+
+    - name: Mount {{ nvme_device }} to {{ data_mount }}
+      mount:
+        src: "{{ nvme_device }}"
+        path: "{{ data_mount }}"
+        fstype: ext4
+        state: mounted
+
+    - name: Create {{ data_mount }} subdirectories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ user }}"
+        group: "libvirt"
+      with_items:
+          - "{{ data_mount }}/libvirt"
+          - "{{ data_mount }}/libvirt/images"
+          - "{{ data_mount }}/libvirt/downloads"
+          - "{{ data_mount }}/libvirt/cloud-init"
+
+    - name: chmod u+s /usr/lib/qemu/qemu-bridge-helper
+      file:
+        path: /usr/lib/qemu/qemu-bridge-helper
+        mode: u+s
+

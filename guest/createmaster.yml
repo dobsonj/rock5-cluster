@@ -1,0 +1,145 @@
+
+- name: Create VM
+  hosts: rock5
+  user: rock
+  become: no
+
+  vars:
+    user: rock
+
+    libvirt_downloads: "/data/libvirt/downloads"
+    libvirt_images: "/data/libvirt/images"
+    libvirt_uri: "qemu:///session" # user session
+
+    base_image_name: debian-12-generic-arm64.qcow2
+    base_image_url: https://cloud.debian.org/images/cloud/bookworm/latest/{{ base_image_name }}
+    base_image: "{{ libvirt_downloads }}/{{ base_image_name }}"
+
+    vm_name: "master{{ node_number + 1 }}"
+    vm_template: "../templates/k8snode.xml.j2"
+    vm_image: "{{ libvirt_images }}/{{ vm_name }}.qcow2"
+    vm_image_size: 100G
+    vm_uuid: "5699398a-625a-4433-827e-0f7e70116db{{ node_number }}"
+
+    net_bridge: "br0"
+    net_template: "../templates/{{ net_bridge }}.xml.j2"
+    net_mac_address: "52:54:00:a8:0b:0{{ node_number }}"
+
+    cloud_init_config_dir: "/data/libvirt/cloud-init/{{ vm_name }}"
+    cloud_init_user_data: "{{ cloud_init_config_dir }}/user-data"
+    cloud_init_meta_data: "{{ cloud_init_config_dir }}/meta-data"
+    cloud_init_meta_data_content: |
+      instance-id: {{ vm_name }}
+      local-hostname: {{ vm_name }}
+    cloud_init_image: "{{ libvirt_images }}/{{ vm_name }}-cloudinit.iso"
+
+  tasks:
+    - name: List available networks
+      community.libvirt.virt_net:
+        uri: "{{ libvirt_uri }}"
+        command: list_nets
+      register: existing_nets
+      changed_when: no
+
+    - name: Define {{ net_bridge }} bridge
+      community.libvirt.virt_net:
+        uri: "{{ libvirt_uri }}"
+        name: "{{ net_bridge }}"
+        command: define
+        xml: "{{ lookup('template', '{{ net_template }}') }}"
+        autostart: yes
+      when:
+        - net_bridge not in existing_nets.list_nets
+
+    - name: Ensure {{ net_bridge }} is active
+      community.libvirt.virt_net:
+        uri: "{{ libvirt_uri }}"
+        name: "{{ net_bridge }}"
+        state: active
+
+    - name: Get VM list
+      community.libvirt.virt:
+        uri: "{{ libvirt_uri }}"
+        command: list_vms
+      register: existing_vms
+      changed_when: no
+
+    - name: Print existing_vms
+      debug:
+        msg: "{{ existing_vms.list_vms }}"
+
+    - name: Download base image
+      get_url:
+        url: "{{ base_image_url }}"
+        tmp_dest: "{{ libvirt_downloads }}"
+        dest: "{{ base_image }}"
+        mode: 0660
+      register: new_image
+
+    - name: Create VM if it does not exist
+      block:
+
+      - name: Create cloud-init config dir
+        file:
+          path: "{{ item }}"
+          state: directory
+          owner: "{{ user }}"
+          group: "libvirt"
+        with_items:
+          - "{{ cloud_init_config_dir }}"
+
+      - name: Create cloud-init meta-data
+        copy:
+          dest: "{{ cloud_init_meta_data }}"
+          content: "{{ cloud_init_meta_data_content }}"
+
+      - name: Create cloud-init user-data
+        copy:
+          src: ../cloud-init/user-data
+          dest: "{{ cloud_init_user_data }}"
+
+      - name: Create cloud-init image
+        command: |
+          cloud-localds {{ cloud_init_image }} \
+          {{ cloud_init_user_data }} {{ cloud_init_meta_data }}
+
+      - name: chown {{ cloud_init_image }}
+        become: yes
+        file:
+          path: "{{ cloud_init_image }}"
+          owner: "{{ user }}"
+          group: "libvirt"
+
+      - name: Create VM disk image
+        copy:
+          src: "{{ base_image }}"
+          dest: "{{ vm_image }}"
+          remote_src: yes
+
+      - name: chown {{ vm_image }}
+        become: yes
+        file:
+          path: "{{ vm_image }}"
+          owner: "{{ user }}"
+          group: "libvirt"
+
+      - name: Resizing {{ vm_image }} to {{ vm_image_size }}
+        command: |
+          qemu-img resize {{ vm_image }} {{ vm_image_size }}
+
+      - name: Define VM
+        community.libvirt.virt:
+          uri: "{{ libvirt_uri }}"
+          command: define
+          xml: "{{ lookup('template', '{{ vm_template }}') }}"
+          autostart: yes
+
+      when:
+        - vm_name not in existing_vms.list_vms
+
+    - name: Ensure VM is started
+      community.libvirt.virt:
+        uri: "{{ libvirt_uri }}"
+        name: "{{ vm_name }}"
+        state: running
+

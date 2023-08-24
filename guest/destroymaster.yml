@@ -1,0 +1,67 @@
+
+- name: Destroy VM
+  hosts: rock5
+  user: rock
+  become: no
+
+  vars:
+    user: rock
+
+    libvirt_downloads: "/data/libvirt/downloads"
+    libvirt_images: "/data/libvirt/images"
+    libvirt_uri: "qemu:///session" # user session
+
+    vm_name: "master{{ node_number + 1 }}"
+    vm_image: "{{ libvirt_images }}/{{ vm_name }}.qcow2"
+
+    cloud_init_config_dir: "/data/libvirt/cloud-init/{{ vm_name }}"
+    cloud_init_image: "{{ libvirt_images }}/{{ vm_name }}-cloudinit.iso"
+
+  tasks:
+    - name: Get VM list
+      community.libvirt.virt:
+        uri: "{{ libvirt_uri }}"
+        command: list_vms
+      register: existing_vms
+      changed_when: no
+
+    - name: Print existing_vms
+      debug:
+        msg: "{{ existing_vms.list_vms }}"
+
+    - name: Destroy VM if it exists
+      block:
+
+      - name: Destroy VM
+        community.libvirt.virt:
+          uri: "{{ libvirt_uri }}"
+          name: "{{ vm_name }}"
+          state: destroyed
+
+      - name: Undefine VM
+        community.libvirt.virt:
+          uri: "{{ libvirt_uri }}"
+          name: "{{ vm_name }}"
+          command: undefine
+          flags: nvram
+          # Need community.libvirt v1.2.1 for nvram flag, and that release isn't out yet.
+          # https://github.com/ansible-collections/community.libvirt/commit/54313e5582927fd9db8a0656446bce9d4d2642c8
+          # install the latest from git with:
+          #   ansible-galaxy collection install git+https://github.com/ansible-collections/community.libvirt.git,main --upgrade
+
+      - name: Delete VM disk image
+        file:
+          path: "{{ vm_image }}"
+          state: absent
+
+      - name: Delete cloud-init data
+        file:
+          path: "{{ item }}"
+          state: absent
+        with_items:
+          - "{{ cloud_init_config_dir }}"
+          - "{{ cloud_init_image }}"
+
+      when:
+        - vm_name in existing_vms.list_vms
+

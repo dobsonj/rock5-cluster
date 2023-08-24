@@ -1,0 +1,10 @@
+
+- name: Reboot Rock5 boards
+  hosts: rock5
+  user: rock
+  become: true
+
+  tasks:
+    - name: Reboot system
+      reboot:
+
